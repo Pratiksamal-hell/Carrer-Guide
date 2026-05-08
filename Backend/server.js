@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import User from "./models/User.js";
 import Roadmap from "./models/Roadmap.js";
@@ -11,8 +12,16 @@ import Video from "./models/Video.js";
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
+
+/* ================================
+   🤖 GEMINI CONFIG
+================================ */
+const genAI = new GoogleGenerativeAI(
+  process.env.GEMINI_API_KEY
+);
 
 /* ================================
    ✅ TEST ROUTE
@@ -24,9 +33,12 @@ app.get("/test", (req, res) => {
 /* ================================
    ✅ MONGODB CONNECTION
 ================================ */
-mongoose.connect(process.env.MONGO_URI)
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("❌ MongoDB error:", err));
+  .catch((err) =>
+    console.error("❌ MongoDB error:", err)
+  );
 
 /* ================================
    🎥 YOUTUBE FUNCTION
@@ -34,26 +46,37 @@ mongoose.connect(process.env.MONGO_URI)
 const getYouTubeVideos = async (skill) => {
   try {
     const existing = await Video.findOne({ skill });
-    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+
+    const SEVEN_DAYS =
+      7 * 24 * 60 * 60 * 1000;
 
     if (existing) {
-      const isExpired = new Date() - new Date(existing.updatedAt) > SEVEN_DAYS;
-      if (!isExpired) return existing.videos;
+      const isExpired =
+        new Date() -
+          new Date(existing.updatedAt) >
+        SEVEN_DAYS;
+
+      if (!isExpired) {
+        return existing.videos;
+      }
     }
 
-    const res = await fetch(
+    const response = await fetch(
       `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
         skill + " tutorial"
       )}&type=video&maxResults=2&key=${process.env.YOUTUBE_API_KEY}`
     );
 
-    const data = await res.json();
+    const data = await response.json();
 
-    const videos = (data.items || []).map((item) => ({
-      title: item.snippet.title,
-      videoId: item.id.videoId,
-      thumbnail: item.snippet.thumbnails.medium.url,
-    }));
+    const videos = (data.items || []).map(
+      (item) => ({
+        title: item.snippet.title,
+        videoId: item.id.videoId,
+        thumbnail:
+          item.snippet.thumbnails.medium.url,
+      })
+    );
 
     await Video.findOneAndUpdate(
       { skill },
@@ -62,6 +85,7 @@ const getYouTubeVideos = async (skill) => {
     );
 
     return videos;
+
   } catch (err) {
     console.error("YouTube Error:", err);
     return [];
@@ -73,24 +97,45 @@ const getYouTubeVideos = async (skill) => {
 ================================ */
 app.post("/signup", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password } =
+      req.body;
 
-    const existingUser = await User.findOne({ email });
+    const existingUser =
+      await User.findOne({ email });
+
     if (existingUser) {
-      return res.status(400).json({ error: "User already exists" });
+      return res.status(400).json({
+        error: "User already exists",
+      });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword =
+      await bcrypt.hash(password, 10);
 
-    const newUser = new User({ name, email, password: hashedPassword });
+    const newUser = new User({
+      name,
+      email,
+      password: hashedPassword,
+    });
+
     await newUser.save();
 
     res.json({
       message: "Signup successful",
-      user: { id: newUser._id, name, email },
+
+      user: {
+        id: newUser._id,
+        name,
+        email,
+      },
     });
-  } catch {
-    res.status(500).json({ error: "Signup failed" });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      error: "Signup failed",
+    });
   }
 });
 
@@ -99,84 +144,242 @@ app.post("/signup", async (req, res) => {
 ================================ */
 app.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } =
+      req.body;
 
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ error: "User not found" });
+    const user =
+      await User.findOne({ email });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ error: "Invalid password" });
+    if (!user) {
+      return res.status(400).json({
+        error: "User not found",
+      });
+    }
+
+    const isMatch =
+      await bcrypt.compare(
+        password,
+        user.password
+      );
+
+    if (!isMatch) {
+      return res.status(400).json({
+        error: "Invalid password",
+      });
+    }
 
     res.json({
       message: "Login successful",
-      user: { id: user._id, name: user.name, email: user.email },
+
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+      },
     });
-  } catch {
-    res.status(500).json({ error: "Login failed" });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      error: "Login failed",
+    });
   }
 });
 
 /* ================================
-   🤖 GENERATE ROADMAP (FIXED)
+   🤖 GENERATE ROADMAP
 ================================ */
 app.post("/generate-roadmap", async (req, res) => {
   try {
     const { goal, level } = req.body;
 
     const prompt = `
-Create a roadmap for ${goal} (${level}).
-Return ONLY JSON:
+You are an expert AI career mentor.
+
+Create a COMPLETE roadmap for becoming a ${goal} (${level}).
+
+Return ONLY valid JSON.
+
+Structure:
 {
   "phases": [
-    { "title": "Phase 1", "skills": ["HTML","CSS"] }
+    {
+      "title": "Frontend Basics",
+      "duration": "2 Weeks",
+
+      "skills": [
+        {
+          "name": "HTML",
+
+          "resources": [
+            {
+              "title": "MDN HTML Guide",
+              "url": "https://developer.mozilla.org/"
+            }
+          ]
+        }
+      ],
+
+      "projects": [
+        {
+          "name": "Portfolio Website",
+          "description": "Build a portfolio website"
+        }
+      ]
+    }
   ]
 }
+
+Requirements:
+- minimum 4 phases
+- minimum 4 skills per phase
+- beginner-friendly roadmap
+- include projects
+- include durations
+- include learning resources
+- return ONLY JSON
 `;
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "meta-llama/llama-3-8b-instruct",
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const model =
+      genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+      });
 
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || "";
+    const result =
+      await model.generateContent(prompt);
 
-    console.log("AI RESPONSE:", text);
+    const response =
+      await result.response;
 
-    let parsed;
-    try {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("No JSON found");
-      parsed = JSON.parse(match[0]);
-    } catch (err) {
-      console.error("Parse error:", err);
-      return res.status(500).json({ error: "Invalid AI response" });
-    }
+    let text = response.text();
 
-    parsed.phases = await Promise.all(
-      (parsed.phases || []).map(async (phase) => {
-        const skills = await Promise.all(
-          (phase.skills || []).slice(0, 3).map(async (skill) => ({
-            name: skill,
-            videos: await getYouTubeVideos(skill),
-          }))
-        );
-        return { ...phase, skills };
-      })
+    console.log(
+      "RAW GEMINI RESPONSE:",
+      text
     );
 
-    res.json({ roadmap: parsed });
+    // Remove markdown formatting
+    text = text
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(text);
+
+    } catch (err) {
+      console.error(
+        "JSON Parse Failed:",
+        err
+      );
+
+      parsed = {
+        phases: [
+          {
+            title: `Learn ${goal}`,
+
+            duration:
+              "Flexible Duration",
+
+            skills: [
+              {
+                name: "Introduction",
+                resources: [],
+              },
+              {
+                name:
+                  "Core Fundamentals",
+                resources: [],
+              },
+              {
+                name: "Projects",
+                resources: [],
+              },
+              {
+                name:
+                  "Advanced Concepts",
+                resources: [],
+              },
+            ],
+
+            projects: [
+              {
+                name:
+                  `${goal} Beginner Project`,
+
+                description:
+                  `Build a beginner-level ${goal} project`,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    // Add YouTube videos
+    parsed.phases = await Promise.all(
+      (parsed.phases || []).map(
+        async (phase) => {
+
+          const skills =
+            await Promise.all(
+              (phase.skills || []).map(
+                async (skill) => {
+
+                  const skillName =
+                    typeof skill ===
+                    "string"
+                      ? skill
+                      : skill.name;
+
+                  return {
+                    name: skillName,
+
+                    resources:
+                      skill.resources || [],
+
+                    videos:
+                      await getYouTubeVideos(
+                        skillName
+                      ),
+                  };
+                }
+              )
+            );
+
+          return {
+            ...phase,
+
+            duration:
+              phase.duration ||
+              "Flexible Duration",
+
+            skills,
+
+            projects:
+              phase.projects || [],
+          };
+        }
+      )
+    );
+
+    res.json({
+      roadmap: parsed,
+    });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to generate roadmap" });
+    console.error(
+      "ROADMAP ERROR:",
+      err
+    );
+
+    res.status(500).json({
+      error:
+        "Failed to generate roadmap",
+    });
   }
 });
 
@@ -185,18 +388,29 @@ Return ONLY JSON:
 ================================ */
 app.post("/save-roadmap", async (req, res) => {
   try {
-    const { userId, goal, level, roadmap } = req.body;
+    const {
+      userId,
+      goal,
+      level,
+      roadmap,
+    } = req.body;
 
     const steps = [];
 
     roadmap.phases.forEach((phase) => {
       phase.skills.forEach((skill) => {
+
         steps.push({
           title: skill.name,
-          description: `Learn ${skill.name}`,
-          resource: skill.videos?.[0]?.videoId
-            ? `https://youtube.com/watch?v=${skill.videos[0].videoId}`
-            : "",
+
+          description:
+            `Learn ${skill.name}`,
+
+          resource:
+            skill.videos?.[0]?.videoId
+              ? `https://youtube.com/watch?v=${skill.videos[0].videoId}`
+              : "",
+
           completed: false,
         });
       });
@@ -216,45 +430,79 @@ app.post("/save-roadmap", async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Save failed" });
+
+    res.status(500).json({
+      error: "Save failed",
+    });
   }
 });
 
 /* ================================
    📥 GET ROADMAPS
 ================================ */
-app.get("/my-roadmaps/:userId", async (req, res) => {
-  try {
-    const roadmaps = await Roadmap.find({ userId: req.params.userId })
-      .sort({ createdAt: -1 });
+app.get(
+  "/my-roadmaps/:userId",
+  async (req, res) => {
+    try {
+      const roadmaps =
+        await Roadmap.find({
+          userId: req.params.userId,
+        }).sort({
+          createdAt: -1,
+        });
 
-    res.json(roadmaps);
-  } catch {
-    res.status(500).json({ error: "Fetch failed" });
+      res.json(roadmaps);
+
+    } catch (err) {
+      console.error(err);
+
+      res.status(500).json({
+        error: "Fetch failed",
+      });
+    }
   }
-});
+);
 
 /* ================================
    ✅ UPDATE PROGRESS
 ================================ */
-app.put("/roadmap/progress/:id", async (req, res) => {
-  try {
-    const { stepIndex, completed } = req.body;
+app.put(
+  "/roadmap/progress/:id",
+  async (req, res) => {
+    try {
+      const {
+        stepIndex,
+        completed,
+      } = req.body;
 
-    const roadmap = await Roadmap.findById(req.params.id);
+      const roadmap =
+        await Roadmap.findById(
+          req.params.id
+        );
 
-    roadmap.steps[stepIndex].completed = completed;
-    await roadmap.save();
+      roadmap.steps[
+        stepIndex
+      ].completed = completed;
 
-    res.json(roadmap);
-  } catch {
-    res.status(500).json({ error: "Update failed" });
+      await roadmap.save();
+
+      res.json(roadmap);
+
+    } catch (err) {
+      console.error(err);
+
+      res.status(500).json({
+        error: "Update failed",
+      });
+    }
   }
-});
+);
 
 /* ================================
    🚀 START SERVER
 ================================ */
 app.listen(5000, () => {
-  console.log("🚀 Server running on port 5000");
+  console.log(
+    "🚀 Server running on port 5000"
+  );
 });
